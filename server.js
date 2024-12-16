@@ -1,16 +1,42 @@
 const express = require('express');
 const axios = require('axios');
 const NodeCache = require('node-cache');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const cache = new NodeCache({ stdTTL: 300 }); // Cache for 5 minutes
 
+// Rate limiting to prevent abuse
+const limiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 100, // Limit each IP to 100 requests per minute
+});
+
+app.use(limiter);
+
+// Logging requests
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// Fallback colors for badge types
+const defaultColors = {
+  stars: '#4caf50',
+  forks: '#2196f3',
+  issues: '#f44336',
+  prs: '#ff9800',
+  'last-commit': '#9c27b0',
+  contributors: '#009688',
+  watchers: '#795548',
+};
+
+// Badge endpoint
 app.get('/b', async (req, res) => {
-  const { user, repo, type = 'stars', color = '#4caf50', labelColor = '#555' } = req.query;
+  const { user, repo, type = 'stars', color, labelColor = '#555' } = req.query;
 
   if (!user || !repo) {
-    res.status(400).send('Error: Please provide both "user" and "repo" query parameters.');
-    return;
+    return res.status(400).send('Error: Please provide both "user" and "repo" query parameters.');
   }
 
   try {
@@ -50,22 +76,32 @@ app.get('/b', async (req, res) => {
       const lastCommitDate = new Date(commits.data[0].commit.author.date);
       label = 'Last Commit';
       value = lastCommitDate.toISOString().split('T')[0]; // Format as YYYY-MM-DD
+    } else if (type === 'contributors') {
+      const contributors = await axios.get(`https://api.github.com/repos/${user}/${repo}/contributors`, {
+        headers: { 'User-Agent': 'Badge-Generator' },
+      });
+      label = 'Contributors';
+      value = contributors.data.length;
+    } else if (type === 'watchers') {
+      label = 'Watchers';
+      value = data.subscribers_count;
     } else {
-      res.status(400).send('Error: Unsupported badge type.');
-      return;
+      return res.status(400).send('Error: Unsupported badge type.');
     }
 
+    const computedColor = color || defaultColors[type] || '#4caf50';
+
     // Badge dimensions
-    const labelWidth = 6 * label.length + 20;
-    const valueWidth = 6 * String(value).length + 20;
+    const labelWidth = 7 * label.length + 20;
+    const valueWidth = 7 * String(value).length + 20;
     const totalWidth = labelWidth + valueWidth;
 
-    // Shields.io-like SVG Badge
+    // Shields.io-like SVG Badge with a modern touch
     const svg = `
       <svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="20" role="img" aria-label="${label}: ${value}">
         <!-- Background rectangles -->
         <rect width="${labelWidth}" height="20" fill="${labelColor}" />
-        <rect x="${labelWidth}" width="${valueWidth}" height="20" fill="${color}" />
+        <rect x="${labelWidth}" width="${valueWidth}" height="20" fill="${computedColor}" />
         <!-- Label text -->
         <text x="${labelWidth / 2}" y="14" fill="#fff" font-family="Verdana, sans-serif" font-size="11" text-anchor="middle">
           ${label}
@@ -81,14 +117,41 @@ app.get('/b', async (req, res) => {
     cache.set(cacheKey, svg);
     res.setHeader('Content-Type', 'image/svg+xml');
     res.send(svg);
-
   } catch (error) {
     console.error('Error fetching GitHub data:', error.message);
-    res.status(500).send('Error fetching GitHub repository data.');
+    const errorBadge = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="200" height="20" role="img" aria-label="Error">
+        <rect width="200" height="20" fill="#f44336" />
+        <text x="100" y="14" fill="#fff" font-family="Verdana, sans-serif" font-size="11" text-anchor="middle">
+          Error fetching data
+        </text>
+      </svg>
+    `;
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.status(500).send(errorBadge);
   }
+});
+
+// Badge preview endpoint
+app.get('/preview', (req, res) => {
+  const user = 'octocat';
+  const repo = 'hello-world';
+  const types = ['stars', 'forks', 'issues', 'prs', 'last-commit', 'contributors', 'watchers'];
+  const baseUrl = `http://localhost:3000/b`;
+
+  const preview = types
+    .map(
+      (type) =>
+        `<div style="margin-bottom:10px;">
+          <img src="${baseUrl}?user=${user}&repo=${repo}&type=${type}" alt="${type}">
+        </div>`
+    )
+    .join('');
+
+  res.send(`<html><body style="font-family:sans-serif;"><h1>Badge Previews</h1>${preview}</body></html>`);
 });
 
 // Start server
 app.listen(3000, () => {
-  console.log('Modern GitHub Badge Generator running on http://localhost:3000/b');
+  console.log('Modern GitHub Badge Generator running on http://localhost:3000');
 });
